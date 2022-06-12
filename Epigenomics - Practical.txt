@@ -1,0 +1,162 @@
+######## EPIGENOMICS PRACTICAL ########
+
+# run container 
+sudo docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+
+# clone repository with ATAC-seq folder 
+git clone https://github.com/bborsari/epigenomics_uvic
+cd epigenomics_uvic 
+cd ATAC-seq
+
+# analyses folder
+mkdir epigenomics_uvic/ATAC-seq/analyses
+mkdir epigenomics_uvic/ATAC-seq/analyses/peaks.analyses
+
+# download data
+epigenomics_uvic/bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_slims=DNA+accessibility&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&assay_title=ATAC-seq&type=Experiment&files.analyses.status=released&files.preferred_default=true"
+
+# bigBed and bigWig files folders
+mkdir epigenomics_uvic/data/bigBed.files 
+mkdir epigenomics_uvic/data/bigWig.files 
+
+# to see how many FASTQ files are available
+head -1 epigenomics_uvic/ATAC-seq/metadata.tsv | awk 'BEGIN{FS=OFS="\t"}{for (i=1;i<=NF;i++){print $i, i}}'
+
+# annotation file with +-2kb from TSS
+mkdir epigenomics_uvic/ATAC-seq/annotation
+wget -P epigenomics_uvic/ATAC-seq/annotation https://public-docs.crg.es/rguigo/Data/bborsari/UVIC/epigenomics_course/gencode.v24.protein.coding.non.redundant.TSS.bed
+
+# ATAC-Seq peaks - tissues 
+grep -F "bigBed_narrowPeak" metadata.tsv|\
+grep -F "pseudoreplicated_peaks" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt
+
+# files - IDs 
+cut -f1 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |\
+while read filename; do
+       wget -P epigenomics_uvic/ATAC-seq/data/bigBed.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+# MD5sum 
+for file_type in bigBed bigWig; do
+
+  # retrieve original MD5 hash from the metadata
+  ../bin/selectRows.sh <(cut -f1 analyses/"$file_type".*.ids.txt) metadata.tsv | cut -f1,46 > data/"$file_type".files/md5sum.txt
+
+  # compute MD5 hash on the downloaded files 
+  cat data/"$file_type".files/md5sum.txt |\
+  while read filename original_md5sum; do 
+    md5sum data/"$file_type".files/"$filename"."$file_type" |\
+    awk -v filename="$filename" -v original_md5sum="$original_md5sum" 'BEGIN{FS=" "; OFS="\t"}{print filename, original_md5sum, $1}' 
+  done > tmp 
+  mv tmp data/"$file_type".files/md5sum.txt
+
+  # make sure there are no files for which original and computed MD5 hashes differ
+  awk '$2!=$3' data/"$file_type".files/md5sum.txt
+
+done
+
+# peaks.analyses
+mkdir epigenomics_uvic/ATAC-seq/analyses/peaks.analyses
+
+# bed.files folder
+mkdir epigenomics_uvic/ATAC-seq/data/bed.files
+
+# .bigBed files to .bed files 
+cut -f1 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |\
+while read filename; do
+      bigBedToBed epigenomics_uvic/ATAC-seq/data/bigBed.files/"$filename".bigBed epigenomics_uvic/ATAC-seq/data/bed.files/"$filename".bed
+done
+
+
+# intersection
+cut -f-2 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |\
+while read filename tissue; do 
+      bedtools intersect -wa -a epigenomics_uvic/ATAC-seq/data/bed.files/"$filename".bed -b epigenomics_uvic/ATAC-seq/annotation/gencode.v24.protein.coding.non.redundant.TSS.bed |\
+        sort -u > epigenomics_uvic/ATAC-seq/analyses/intersects.ATAC."$tissue".bed
+done
+
+# peak count
+wc -l *.bed > epigenomics_uvic/ATAC-seq/analyses/peakcounts.txt  ## counts all lines in all folders
+
+# out annotation 
+wget -P epigenomics_uvic/ATAC-seq/annotation https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz
+
+# gunzip
+gunzip epigenomics_uvic/ATAC-seq/annotation/gencode.v24.primary_assembly.annotation.gtf.gz 
+
+# annotation -> .bed    
+awk '$3=="gene"' epigenomics_uvic/ATAC-seq/annotation/gencode.v24.primary_assembly.annotation.gtf |\   ## annotation file with protein coding genes location
+grep -F "protein_coding" |\
+cut -d ";" -f1 |\
+awk 'BEGIN{OFS="\t"}{print $1, $4, $5, $10, 0, $7, $10}' |\
+sed 's/\"//g' |\
+awk 'BEGIN{FS=OFS="\t"}$1!="chrM"{$2=($2-1); print $0}' > epigenomics_uvic/ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed 
+
+
+# inverse intersection with -v 
+cut -f-2 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |while read filename tissue; do bedtools intersect -b epigenomics_uvic/ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed -a epigenomics_uvic/ATAC-seq/data/bed.files/"$filename".bed -v > epigenomics_uvic/ATAC-seq/analyses/outside."$tissue".bed; done  ## it´s like grep -v
+
+### TASK 5 
+
+# H3K27ac
+mkdir epigenomics_uvic/regulatory_elements
+mkdir epigenomics_uvic/regulatory_elements/H3K27ac
+grep -F H3K27ac ChIP-seq/metadata.tsv | grep -F "bigBed_narrowPeak" | grep -F "pseudoreplicated_peaks" |grep -F "GRCh38" |awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |sort -k2,2 -k1,1r |sort -k2,2 -u > epigenomics_uvic/regulatory_elements/H3K27ac/H3K27acbigbedsids.txt
+
+# H3K4me1
+mkdir epigenomics_uvic/regulatory_elements/H3K4me1
+grep -F H3K4me1 ChIP-seq/metadata.tsv | grep -F "bigBed_narrowPeak" | grep -F "pseudoreplicated_peaks" | grep -F "GRCh38" | awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' | sort -k2,2 -k1,1r |sort -k2,2 -u > epigenomics_uvic/regulatory_elements/H3K4me1/H3K4me1bigbedsids.txt
+
+# H3K27ac ; H3K4me1 -> bigBed
+cut -f1 epigenomics_uvic/regulatory_elements/H3K27ac/H3K27acbigbedsids.txt |\
+while read filename; do wget -P epigenomics_uvic/regulatory_elements/H3K27ac "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+cut -f1 epigenomics_uvic/regulatory_elements/H3K4me1/H3K4me1/H3K4me1bigbedsids.txt |\
+while read filename; do 
+wget -P epigenomics_uvic/regulatory_elements/H3K4me1 "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+
+# bigBed -> .bed
+cut -f1 epigenomics_uvic/regulatory_elements/H3K27ac/bigBed.peaksH3K27ac.ids.txt |\
+while read filename; do bigBedToBed H3K27ac/"$filename".bigBed epigenomics_uvic/regulatory_elements/H3K27ac/"$filename".bed
+done
+
+cut -f1 epigenomics_uvic/regulatory_elements/H3K4me1/H3K4me1bigbedsids |\
+while read filename; do bigBedToBed H3K4me1/"$filename".bigBed epigenomics_uvic/regulatory_elements/H3K4me1/"$filename".bed
+done
+
+# H3K27ac -> outer genes
+bedtools intersect -a epigenomics_uvic/ATAC-seq/analyses/outside.stomach.bed -b H3K27ac/ENCFF872UHN.bed -u > H3K4me1/outside_stomach.bed
+bedtools intersect -a epigenomics_uvic/ATAC-seq/analyses/outside.sigmoid_colon.bed -b H3K27ac/ENCFF977LBD.bed -u > H3K4me1/outside_sigmoidcolon.bed
+
+# H3K4me1 -> intersect
+bedtools intersect -a epigenomics_uvic/regulatory_elements/H3K4me1/outside_sigmoidcolon.bed -b H3K4me1/ENCFF844XRN.bed -u > epigenomics_uvic/regulatory_elements/atsigmoid_colon.bed
+bedtools intersect -a epigenomics_uvic/regulatory_elements/H3K4me1/outside_stomach.bed -b H3K4me1/ENCFF724ZOF.bed -u > epigenomics_uvic/regulatory_elements/atstomach.bed
+
+# peak count
+wc -l *.bed > epigenomics_uvic/ATAC-seq/analyses/countpeaks.txt
+
+# chr1 -> peaks
+cut -f2 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |\
+grep -w chr1  epigenomics_uvic/ATAC-seq/analyses/common_sigmoid_colon.bed | awk 'BEGIN{FS=OFS="\t"}$1=="chr1"{print $4, $2}' > epigenomics_uvic/regulatory_elements/sigmoid_colon.regulatory.elements.starts.tsv
+
+cut -f2 epigenomics_uvic/ATAC-seq/analyses/bigBed.peaks.ids.txt |\
+grep -w chr1  epigenomics_uvic/regulatory_elements/atstomach.bed | awk 'BEGIN{FS=OFS="\t"}$1=="chr1"{print $4, $2}' > epigenomics_uvic/regulatory_elements/stomach.regulatory.elements.starts.tsv
+
+# peak count
+wc -l epigenomics_uvic/regulatory_elements/stomach.regulatory.elements.starts.tsv > analyses/peakcountsreg.txt
+wc -l epigenomics_uvic/regulatory_elements/sigmoid_colon.regulatory.elements.starts.tsv >> analyses/peakcountsreg.txt
+
+# gene starts tab-separated
+grep -w chr1 epigenomics_uvic/ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed |
+awk 'BEGIN{FS=OFS="\t"}{if ($6=="+"){start=$2} else {start=$3}; print $4, start}' > epigenomics_uvic/regulatory_elements/gene.starts.tsv
+
+# python script 
+wget epigenomics_uvic/bin https://public-docs.crg.es/rguigo/Data/bborsari/UVIC/epigenomics_course/get.distance.py 
+nano epigenomics.uvic/bin/get.distance.py
