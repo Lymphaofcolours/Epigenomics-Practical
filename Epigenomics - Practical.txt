@@ -160,3 +160,28 @@ awk 'BEGIN{FS=OFS="\t"}{if ($6=="+"){start=$2} else {start=$3}; print $4, start}
 # python script 
 wget epigenomics_uvic/bin https://public-docs.crg.es/rguigo/Data/bborsari/UVIC/epigenomics_course/get.distance.py 
 nano epigenomics.uvic/bin/get.distance.py
+
+# distance.py in each tissue, reading start and inputting it as variable in while script
+cat sigmoid_colon.regulatory.elements.starts.tsv|\
+while read element start;\
+do 
+	python ../bin/get.distance.py --input gene.starts.tsv --start $start
+done > regulatory.elements.genes.distances_sigcol.tsv
+
+cat stomach.regulatory.elements.starts.tsv|\
+while read element start;\
+do 
+	python ../bin/get.distance.py --input gene.starts.tsv --start $start
+done > regulatory.elements.genes.distances_stom.tsv
+
+
+# mean/median of distances in .tsv
+sigcol <- read.csv(regulatory.elements.genes.distances_sigcol.tsv', sep = '')
+distsigcol <- unlist(sigcol[,3], use.names = FALSE)
+mean(distsigcol)
+median(distsigcol)
+
+stom <- read.csv('regulatory.elements.genes.distances_stom.tsv', sep = '')
+diststom <- unlist(stom[,3], use.names = FALSE)
+mean(diststom)
+median(diststom)
